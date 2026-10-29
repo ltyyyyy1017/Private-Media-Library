@@ -38,3 +38,19 @@ class TagTests(unittest.TestCase):
         self.call('/tags','POST',json={'name':'test'})
         id=next(iter(self.call('/tags').json['tags']))
         self.assertEqual(self.call('/tags','POST',json={'action':'assign','id':id,'paths':['../secret'],'add':True}).status_code,400)
+
+    def test_multi_tag_assignment(self):
+        self.login()
+        for filename in ('a.mp4','b.mp4'):
+            (self.root/filename).write_bytes(b'synthetic')
+        for label in ('旅行','收藏','待看'):
+            self.call('/tags','POST',json={'name':label})
+        ids=list(self.call('/tags').json['tags'])
+        self.call('/tags','POST',json={'action':'assign_many','paths':['a.mp4','b.mp4'],'add':ids[:2],'remove':[]})
+        values=self.call('/tag-files','POST',json={'paths':['a.mp4','b.mp4']}).json
+        self.assertEqual(set(values['a.mp4']),set(ids[:2]))
+        self.assertEqual(set(values['b.mp4']),set(ids[:2]))
+        self.call('/tags','POST',json={'action':'assign_many','paths':['a.mp4'],'add':[ids[2]],'remove':[ids[0]]})
+        values=self.call('/tag-files','POST',json={'paths':['a.mp4','b.mp4']}).json
+        self.assertEqual(set(values['a.mp4']),{ids[1],ids[2]})
+        self.assertEqual(set(values['b.mp4']),set(ids[:2]))

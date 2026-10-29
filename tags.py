@@ -60,6 +60,21 @@ def install(app,target,metadata_dir,mutex):
                     else:
                         del data['tags'][tag]
                         data['files']={k:[x for x in values if x!=tag] for k,values in data['files'].items()}
+                elif action=='assign_many':
+                    paths=body.get('paths')
+                    adds,removes=body.get('add'),body.get('remove')
+                    if not isinstance(paths,list) or not 1<=len(paths)<=2000 or not isinstance(adds,list) or not isinstance(removes,list):
+                        abort(400)
+                    if any(not isinstance(x,str) or x not in data['tags'] for x in adds+removes):
+                        abort(400)
+                    keys=[]
+                    for path in paths:
+                        p=target(path)
+                        if not p.is_file():
+                            abort(404)
+                        keys.append(identity(p))
+                    for key in keys:
+                        data['files'][key]=sorted((set(data['files'].get(key,[]))-set(removes))|set(adds))
                 elif action=='assign':
                     if tag not in data['tags'] or not isinstance(body.get('paths'),list) or len(body['paths'])>2000 or not isinstance(body.get('add'),bool):
                         abort(400)
