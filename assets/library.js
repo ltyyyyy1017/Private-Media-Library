@@ -5,8 +5,8 @@ const join=n=>dir?dir+'/'+n:n,url=p=>'/file?path='+encodeURIComponent(p),size=n=
 let loadVersion=0;
 const filePath=f=>f._path??join(f.name);
 function toast(s){$('toast').textContent=s;$('toast').hidden=false;setTimeout(()=>$('toast').hidden=true,5000)}
-async function api(path,options={}){options.headers={...options.headers};if(options.method)options.headers['X-CSRF-Token']=csrf;let r;try{r=await fetch(path,options)}catch{throw Error('连接中断：请确认手机仍连接电脑热点、共享服务仍在运行。写入操作请刷新核对结果后再试。')}if(!r.ok){if(r.status===401&&!$('login').open)$('login').showModal();throw Error(({401:'密码错误或登录已过期',403:'访问被拒绝',404:'文件已移动或删除，请刷新列表后重试',409:'文件状态已变化或名称冲突，请刷新后重试',422:'无法解码或无损转换此文件，请下载原文件播放',500:'服务器处理失败，请检查文件访问权限及磁盘空间',503:'服务忙，请稍后重试',413:'文件过大',429:'尝试过多，请一分钟后重试'})[r.status]||'操作失败 '+r.status)}return r}
-const run=f=>Promise.resolve().then(f).catch(e=>toast(e.message));let post=(path,data)=>api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+async function api(path,options={}){options.headers={...options.headers};if(options.method)options.headers['X-CSRF-Token']=csrf;let r;try{r=await fetch(path,options)}catch{showConnectionProblem();throw Error('连接中断：请确认手机仍连接电脑热点、共享服务仍在运行。写入操作请刷新核对结果后再试。')}if(!r.ok){if(r.status===401&&!$('login').open)$('login').showModal();throw Error(({401:'密码错误或登录已过期',403:'访问被拒绝',404:'文件已移动或删除，请刷新列表后重试',409:'文件状态已变化或名称冲突，请刷新后重试',422:'无法解码或无损转换此文件，请下载原文件播放',500:'服务器处理失败，请检查文件访问权限及磁盘空间',503:'服务忙，请稍后重试',413:'文件过大',429:'尝试过多，请一分钟后重试'})[r.status]||'操作失败 '+r.status)}return r}
+const run=f=>Promise.resolve().then(f).catch(e=>{if(isConnectionError(e)){showConnectionProblem();toast('连接未完成，请查看页面顶部的连接提示。')}else toast(e.message)});let post=(path,data)=>api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 function button(label,fn){let b=document.createElement('button');b.textContent=label;b.onclick=()=>{if(b.disabled)return;b.disabled=true;return run(fn).finally(()=>b.disabled=false)};return b}
 function remember(key,val){try{localStorage.setItem(key,String(val))}catch{}}
 function recalled(key){try{return localStorage.getItem(key)}catch{return null}}
@@ -24,3 +24,19 @@ function uploadFile(file){return new Promise((resolve,reject)=>{let xhr=new XMLH
 async function upload(files){if(uploading)return toast('请等待当前上传完成');uploading=true;$('uploadStatus').hidden=false;let failures=[];try{for(let [i,file] of [...files].entries()){$('uploadText').textContent=`${i+1}/${files.length} 正在上传 ${file.name}`;$('progress').value=0;try{await uploadFile(file)}catch(e){failures.push(e.message)}}await load();toast(failures.length?failures.join('；'):'全部上传完成')}finally{uploading=false;$('uploadStatus').hidden=true;$('upload').value=''}}
 $('uploadButton').onclick=()=>$('upload').click();$('upload').onchange=()=>run(()=>upload($('upload').files));document.addEventListener('dragover',e=>{e.preventDefault();document.body.classList.add('drag')});document.addEventListener('dragleave',()=>document.body.classList.remove('drag'));document.addEventListener('drop',e=>{e.preventDefault();document.body.classList.remove('drag');if(csrf&&e.dataTransfer.files.length)run(()=>upload(e.dataTransfer.files))});
 (async()=>{try{csrf=(await(await api('/session')).json()).csrf;await load()}catch{if(!$('login').open)$('login').showModal()}})();
+
+// This banner remains visible when TLS, hotspot connectivity or response bodies fail.
+function isConnectionError(error){return /failed to fetch|load failed|networkerror|network request failed|连接中断|aborted|network connection/i.test(String(error?.message||error))}
+let connectionBanner,connectionTimer,connectionChecks=0;
+function showConnectionProblem(){
+ if(!connectionBanner){connectionBanner=document.createElement('div');connectionBanner.className='connection-problem';connectionBanner.setAttribute('role','status');let text=document.createElement('p');text.textContent='无法完成与电脑的连接。请确认：设备连接电脑热点；管理面板显示共享已启动；使用 https://192.168.137.1:8443 访问。若出现证书提示，请按程序的证书说明核对并信任。';connectionBanner.append(text,button('重新打开安全连接',()=>{location.assign('https://192.168.137.1:8443/')}),button('检测连接',checkConnection));document.body.prepend(connectionBanner)}
+ connectionBanner.hidden=false;
+ if(!connectionTimer&&connectionChecks<6)connectionTimer=setTimeout(()=>{connectionTimer=null;run(checkConnection)},Math.min(30000,2000*2**connectionChecks));
+}
+async function checkConnection(){
+ if(document.hidden)return;
+ connectionChecks++;const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+ try{let response=await fetch('/?connection-check='+Date.now(),{method:'HEAD',cache:'no-store',signal:controller.signal});if(!response.ok)throw Error('HTTP '+response.status);connectionChecks=0;if(connectionTimer){clearTimeout(connectionTimer);connectionTimer=null}if(connectionBanner){connectionBanner.querySelector('p').textContent='已重新连接电脑。请刷新列表后继续；刚才的写入可能已完成，请先核对，避免重复提交。';connectionBanner.querySelector('button').textContent='刷新页面继续';connectionBanner.querySelector('button').onclick=()=>location.reload();}return true}catch{showConnectionProblem();return false}finally{clearTimeout(timer)}
+}
+window.addEventListener('offline',showConnectionProblem);window.addEventListener('online',()=>run(checkConnection));
+window.addEventListener('unhandledrejection',event=>{if(isConnectionError(event.reason)){event.preventDefault();showConnectionProblem()}});
