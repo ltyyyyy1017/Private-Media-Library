@@ -7,3 +7,4 @@ pillow-heif>=1.0,<2
 rawpy>=0.25,<0.28
 pypng>=0.20220715
 pystray>=0.19.5,<0.20
+dhash==1.4

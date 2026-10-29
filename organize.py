@@ -107,16 +107,36 @@ def install(app, root, target, metadata_dir, mutex, favorites_read, favorites_wr
     def library():
         return jsonify(list(walk()))
 
+    results_file=safe_metadata(metadata_dir('.hotspot-organize')/'duplicates.json')
     state = dict(running=False, phase='尚未扫描', checked=0, total=0, groups=[], skipped=0)
+    if results_file.exists():
+        try:
+            saved=json.loads(results_file.read_text(encoding='utf-8'))
+            state.update(saved,running=False)
+        except (ValueError,OSError):
+            pass
     scan_lock = threading.Lock()
 
     @app.get('/duplicates')
     def duplicates():
         with scan_lock:
-            return jsonify(state)
+            snapshot=dict(state)
+            snapshot['groups']=[]
+            for group in state['groups']:
+                paths=[]
+                for path in group['paths']:
+                    try:
+                        if target(path).is_file():
+                            paths.append(path)
+                    except Exception:
+                        continue
+                if len(paths)>1:
+                    snapshot['groups'].append(dict(group,paths=paths))
+            return jsonify(snapshot)
 
     @app.post('/duplicates')
     def start_duplicates():
+        include_similar=(request.get_json() or {}).get('similar') is True
         with scan_lock:
             if state['running']:
                 return jsonify(running=True), 202
@@ -126,7 +146,8 @@ def install(app, root, target, metadata_dir, mutex, favorites_read, favorites_wr
             with app.app_context():
                 try:
                     sizes = defaultdict(list)
-                    for f in walk():
+                    files=list(walk())
+                    for f in files:
                         sizes[f['size']].append(f['name'])
                     candidates = [names for names in sizes.values() if len(names)>1]
                     with scan_lock:
@@ -176,8 +197,27 @@ def install(app, root, target, metadata_dir, mutex, favorites_read, favorites_wr
                                     continue
                             if len(equal)>1:
                                 groups.append(dict(paths=equal,size=signature[2]))
+                    if include_similar:
+                        from similarity import find_candidates
+                        cache_file=safe_metadata(metadata_dir('.hotspot-organize')/'fingerprints.json')
+                        try:
+                            cache=json.loads(cache_file.read_text(encoding='utf-8')) if cache_file.exists() else {}
+                        except (ValueError,OSError):
+                            cache={}
+                        def progress(done,total):
+                            with scan_lock:
+                                state.update(phase='本地相似媒体比对',checked=done,total=total)
+                        candidates,skipped=find_candidates(files,target,cache,progress)
+                        exact_pairs={frozenset(g['paths']) for g in groups}
+                        groups.extend(g for g in candidates if frozenset(g['paths']) not in exact_pairs)
+                        cache_file.write_text(json.dumps(cache),encoding='utf-8')
+                        with scan_lock:
+                            state['skipped']+=skipped
                     with scan_lock:
-                        state.update(groups=groups, phase='扫描完成（操作文件后请重新扫描）')
+                        state.update(groups=groups, phase='扫描完成 · 结果已保留',checked=state['total'])
+                        temporary=results_file.with_suffix('.tmp')
+                        temporary.write_text(json.dumps(dict(state,running=False),ensure_ascii=False),encoding='utf-8')
+                        os.replace(temporary,results_file)
                 except Exception:
                     with scan_lock:
                         state.update(phase='扫描中断，请重试')

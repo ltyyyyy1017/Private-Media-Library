@@ -56,6 +56,32 @@ class OrganizeTests(unittest.TestCase):
         self.assertEqual(self.call('/undo','POST',json={'id':row['id']}).status_code,409)
         self.assertEqual((self.root/'b.txt').read_bytes(),b'changed length')
 
+    def test_similar_reencoded_image_and_persistent_results(self):
+        import numpy as np
+        from app import create_app
+        self.login()
+        rng=np.random.default_rng(42)
+        pixels=rng.integers(0,256,(48,64,3),dtype=np.uint8)
+        image=Image.fromarray(pixels).resize((640,480))
+        image.save(self.root/'original.png')
+        image.resize((320,240)).save(self.root/'reencoded.jpg',quality=90)
+        Image.fromarray(rng.integers(0,256,(48,64,3),dtype=np.uint8)).resize((640,480)).save(self.root/'different.png')
+        self.call('/duplicates','POST',json={'similar':True})
+        for _ in range(150):
+            result=self.call('/duplicates').json
+            if not result['running']:
+                break
+            time.sleep(.02)
+        groups=[g for g in result['groups'] if g.get('similar')]
+        self.assertEqual(len(groups),1,result['phase'])
+        self.assertEqual(set(groups[0]['paths']),{'original.png','reencoded.jpg'})
+        self.app=create_app(self.root,'192.168.137.0/24','test-password-12345')
+        self.client=self.app.test_client()
+        self.login()
+        self.assertEqual(self.call('/duplicates').json['groups'],result['groups'])
+        self.call('/delete','POST',json={'path':'reencoded.jpg'})
+        self.assertEqual(self.call('/duplicates').json['groups'],[])
+
     def test_hq_thumbnail_lossless_remux(self):
         import imageio_ffmpeg
         ffmpeg=imageio_ffmpeg.get_ffmpeg_exe()
@@ -93,6 +119,21 @@ class OrganizeTests(unittest.TestCase):
         self.assertEqual(source.read_bytes(),original)
         with self.call('/video-compatible?path=synthetic.mkv',headers={'Range':'bytes=0-15'}) as response:
             self.assertEqual(response.status_code,206)
+
+    def test_similar_reencoded_video(self):
+        import imageio_ffmpeg
+        from similarity import fingerprint,similar
+        ffmpeg=imageio_ffmpeg.get_ffmpeg_exe()
+        a,b,c=[self.root/name for name in ('a.mp4','b.mkv','c.mp4')]
+        subprocess.run([ffmpeg,'-v','error','-f','lavfi','-i','testsrc2=size=320x180:rate=10',
+                        '-t','3','-c:v','libx264','-crf','18',str(a)],capture_output=True,check=True)
+        subprocess.run([ffmpeg,'-v','error','-i',str(a),'-vf','scale=640:360','-c:v','libx264',
+                        '-crf','30',str(b)],capture_output=True,check=True)
+        subprocess.run([ffmpeg,'-v','error','-f','lavfi','-i','testsrc=size=320x180:rate=10',
+                        '-t','3','-c:v','libx264','-pix_fmt','yuv420p',str(c)],capture_output=True,check=True)
+        fa,fb,fc=map(fingerprint,(a,b,c))
+        self.assertTrue(similar(fa,fb))
+        self.assertFalse(similar(fa,fc))
 
 
 if __name__=='__main__':

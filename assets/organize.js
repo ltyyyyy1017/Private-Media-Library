@@ -27,14 +27,27 @@ $('nav').append(button('↶ 整理记录 / 撤销',async()=>{
   }await refresh();
 }));
 $('nav').append(button('≡ 精确重复查找',async()=>{
-  const {d,body}=toolDialog('本机精确重复查找');
-  let note=document.createElement('p');note.textContent='只在电脑本地按大小、SHA-256、逐字节比对；不调用 AI、不联网。不会自动删除。扫描结果是当时的快照，改动文件后请重新扫描。';
+  const {d,body}=toolDialog('重复与相似媒体');
+  let note=document.createElement('p');note.textContent='精确结果为字节完全相同；相似结果只供人工比较。扫描在本机进行，无 AI。结果会保留，可直接预览和整理。';
   let status=document.createElement('p'),groups=document.createElement('div');
-  let start=button('开始本地扫描',async()=>{await post('/duplicates',{});poll()});body.append(note,start,status,groups);
-  async function poll(){if(!d.isConnected)return;let result=await(await api('/duplicates')).json();start.disabled=result.running;status.textContent=result.phase+' · '+result.checked+'/'+result.total+' · 跳过 '+result.skipped;groups.replaceChildren();
-    if(!result.running){for(let group of result.groups){let section=document.createElement('section'),h=document.createElement('h3');h.textContent=group.paths.length+' 个完全相同的文件 · 每个 '+size(group.size);section.append(h);
-      for(let path of group.paths){let row=document.createElement('div');row.className='duplicate-row';let label=document.createElement('span');label.textContent=path;row.append(label,button('查看',async()=>{d.close();d.remove();wholeLibrary=true;filter='all';dir='';await load();let f=items.find(x=>x.name===path);if(f)await open(f)}),button('移入回收区',async()=>{if(!confirm('确认移入回收区：'+path+'？请先确认保留的副本。'))return;await post('/delete',{path});await load();status.textContent='已移入回收区，可在整理记录撤销。请重新扫描。';groups.replaceChildren()}));section.append(row)}groups.append(section)}
-      if(!result.groups.length&&result.phase.startsWith('扫描完成'))groups.textContent='没有发现完全相同的文件。';
+  let start=button('开始本地扫描',()=>scan(false)),approx=button('扫描相似图片 / 视频',()=>scan(true));
+  body.append(note,start,approx,status,groups);
+  async function scan(similar){await post('/duplicates',{similar});await poll()}
+  async function preview(path){
+    const view=toolDialog(path),type=kind({name:path});let message=document.createElement('p');view.body.append(message);
+    if(type==='image'){let img=document.createElement('img');img.className='duplicate-preview';setImagePreview(img,path);view.body.append(img)}
+    else if(type==='video'){let video=document.createElement('video');video.controls=true;video.playsInline=true;video.className='duplicate-preview';view.body.append(video);view.d.addEventListener('close',()=>{video.pause();video.removeAttribute('src');video.load()});
+      if(/\.(ts|mts|m2ts|mkv|avi)$/i.test(path)){message.textContent='正在准备无损兼容播放…';let endpoint='/video-compatible?path='+encodeURIComponent(path);await post(endpoint,{});for(let n=0;n<620&&view.d.isConnected;n++){let r=await api(endpoint+'&status=1');if(r.status===200){video.src=endpoint;message.textContent='原画质 · 无损封装';break}await new Promise(resolve=>setTimeout(resolve,1000))}}
+      else video.src=url(path);
+      video.onerror=()=>message.textContent='当前浏览器不支持此编码，可下载原文件比较。';
+    }else if(type==='text'){let r=await api(url(path));if(Number(r.headers.get('Content-Length'))>20*1024*1024){message.textContent='文档过大，请下载查看';return}let text=document.createElement('pre');text.className='duplicate-text';text.textContent=await r.text();view.body.append(text)}
+    let link=document.createElement('a');link.textContent='下载原文件';link.href=url(path)+'&download=1';view.body.append(link);
+  }
+  async function poll(){if(!d.isConnected)return;let result=await(await api('/duplicates')).json();start.disabled=approx.disabled=result.running;status.textContent=result.phase+' · '+result.checked+'/'+result.total+' · 跳过 '+result.skipped;
+    if(!result.running){groups.replaceChildren();for(let group of result.groups){let section=document.createElement('section'),h=document.createElement('h3');h.textContent=group.paths.length+(group.similar?' 个疑似相似文件 · 请人工核对':' 个完全相同的文件 · 每个 '+size(group.size));section.append(h);
+      for(let path of group.paths){let row=document.createElement('div');row.className='duplicate-row';let label=document.createElement('span');label.textContent=path;let type=kind({name:path}),cover=document.createElement('div');cover.className='duplicate-cover';if(type==='image'){let img=document.createElement('img');img.loading='lazy';setImagePreview(img,path);cover.append(img)}else if(type==='video'){cover.textContent='▷';watchThumbnail(cover,{},path)}else cover.textContent='TXT';
+        row.append(cover,label,button('查看',()=>preview(path)),button('移入回收区',async()=>{if(!confirm('确认移入回收区：'+path+'？请先确认保留的副本。'))return;await post('/delete',{path});row.remove();let count=section.querySelectorAll('.duplicate-row').length;h.textContent=count+' 个剩余文件 · '+(group.similar?'疑似相似':'完全相同');if(count<2)section.remove();status.textContent='已移入回收区，可在整理记录撤销。其他结果已保留。';}));section.append(row)}groups.append(section)}
+      if(!result.groups.length&&result.phase.startsWith('扫描完成'))groups.textContent='没有发现符合条件的重复或相似文件。';
     }else setTimeout(()=>run(poll),1000);
   }await poll();
 }));
@@ -50,7 +63,7 @@ const compatButton=button('无损兼容播放',async()=>{
   }finally{compatButton.disabled=false}
 });
 const qualityOpen=open;
-open=async function(f){await qualityOpen(f);if(current!==f)return;compatButton.hidden=kind(f)!=='video';if(kind(f)==='video'){$('mediaHint').textContent='原始画质播放 · 无降码率、无降分辨率 · 无法播放时可尝试无损兼容播放';}if(kind(f)==='image'){let img=$('stage').querySelector('img');if(img){img.onclick=()=>{img.classList.toggle('zoom');img.style.width=img.classList.contains('zoom')?img.naturalWidth+'px':''};$('mediaHint').textContent+=' · 点击按原始像素查看；小图放大不能增加细节';}}};
+open=async function(f){await qualityOpen(f);if(current!==f)return;compatButton.hidden=kind(f)!=='video';if(kind(f)==='video'){$('mediaHint').textContent='原始画质播放 · 无降码率、无降分辨率 · 无法播放时可尝试无损兼容播放';if(/\.(ts|mts|m2ts)$/i.test(f.name))compatButton.click();}if(kind(f)==='image'){let img=$('stage').querySelector('img');if(img){img.onclick=()=>{img.classList.toggle('zoom');img.style.width=img.classList.contains('zoom')?img.naturalWidth+'px':''};$('mediaHint').textContent+=' · 点击按原始像素查看；小图放大不能增加细节';}}};
 $('download').before(compatButton);compatButton.hidden=true;
 watchThumbnail=function(cover,f,path){cover._thumbnailJob=async()=>{
   const endpoint='/thumbnail?path='+encodeURIComponent(path);let status;

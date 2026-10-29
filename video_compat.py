@@ -20,7 +20,7 @@ def install(app, target, metadata_dir):
         if not p.is_file() or p.suffix.lower() not in VIDEO_EXTENSIONS:
             abort(404)
         s=p.stat()
-        key=hashlib.sha256((str(p)+str(s.st_size)+str(s.st_mtime_ns)).encode()).hexdigest()
+        key=hashlib.sha256(('ts-v2'+str(p)+str(s.st_size)+str(s.st_mtime_ns)).encode()).hexdigest()
         cache=metadata_dir('.hotspot-video')
         output=cache/(key+'.mp4')
         with lock:
@@ -44,8 +44,13 @@ def install(app, target, metadata_dir):
             temporary=cache/(key+'.tmp.mp4')
             try:
                 # Copy both streams. Unsupported codecs fail rather than silently losing quality/audio.
-                command=[imageio_ffmpeg.get_ffmpeg_exe(),'-nostdin','-v','error','-protocol_whitelist','file',
-                         '-i',str(p),'-map','0:v:0','-map','0:a:0?','-c','copy','-movflags','+faststart','-y',str(temporary)]
+                exe=imageio_ffmpeg.get_ffmpeg_exe()
+                probe=subprocess.run([exe,'-nostdin','-protocol_whitelist','file','-i',str(p)],capture_output=True,
+                                     timeout=35,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+                tags=['-tag:v','hvc1'] if b'Video: hevc' in probe.stderr else []
+                command=[exe,'-nostdin','-v','error','-protocol_whitelist','file','-fflags','+genpts',
+                         '-i',str(p),'-map','0:v:0','-map','0:a:0?','-c','copy',*tags,
+                         '-avoid_negative_ts','make_zero','-movflags','+faststart','-y',str(temporary)]
                 result=subprocess.run(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
                                       timeout=600,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
                 if result.returncode or not temporary.exists() or p.stat().st_mtime_ns!=s.st_mtime_ns or p.stat().st_size!=s.st_size:
