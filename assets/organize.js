@@ -1,8 +1,10 @@
 'use strict';
-let wholeLibrary=false,libraryRefresh=false;
+let wholeLibrary=true,libraryRefresh=false;
 const folderLoad=load;
 load=async function(){
   const version=loadVersion;
+  scope.textContent=wholeLibrary?'文件夹浏览':'返回全部文件';
+  $('search').placeholder=wholeLibrary?'搜索全库名称或路径…':'搜索当前文件夹…';
   if(!wholeLibrary||filter==='favorites')return folderLoad();
   dir='';selectedFiles.clear();
   favoritePaths=new Set((await(await api('/favorites')).json()).map(x=>x.path));
@@ -19,14 +21,14 @@ load=async function(){
     if(offset>=page.total)break;
   }
   if(version!==loadVersion)return;items=rows.map(f=>({...f,_path:f.name}));
-  $('crumb').textContent='全库虚拟分类 · 原文件位置不变';
+  $('crumb').textContent='全部文件 · 可通过上方标签筛选';
   render();$('count').textContent=$('grid').children.length+' 项内容 · 全库';
 };
-const scope=button('切换全库视图',async()=>{wholeLibrary=!wholeLibrary;libraryRefresh=true;dir='';scope.textContent=wholeLibrary?'返回文件夹视图':'切换全库视图';$('search').placeholder=wholeLibrary?'搜索全库名称或路径…':'搜索当前文件夹…';await load()});
+const scope=button('文件夹浏览',async()=>{wholeLibrary=!wholeLibrary;libraryRefresh=true;dir='';scope.textContent=wholeLibrary?'文件夹浏览':'返回全部文件';$('search').placeholder=wholeLibrary?'搜索全库名称或路径…':'搜索当前文件夹…';await load()});
 $('heading').after(scope);scope.after(button('刷新全库索引',async()=>{wholeLibrary=true;libraryRefresh=true;dir='';await load()}));
 document.querySelectorAll('nav button[data-type]').forEach(b=>b.onclick=()=>run(async()=>{
-  wholeLibrary=b.dataset.type!=='all';libraryRefresh=true;dir='';filter=b.dataset.type;
-  scope.textContent=wholeLibrary?'返回文件夹视图':'切换全库视图';
+  wholeLibrary=true;libraryRefresh=true;dir='';filter='all';
+  scope.textContent=wholeLibrary?'文件夹浏览':'返回全部文件';
   $('search').placeholder=wholeLibrary?'搜索全库名称或路径…':'搜索当前文件夹…';
   document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));
   $('heading').textContent=b.textContent.slice(2);await load();
