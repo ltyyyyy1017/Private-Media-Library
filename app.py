@@ -193,7 +193,11 @@ def create_app(root, network, password):
 
     @app.post('/delete')
     def delete():
-        p=target((request.get_json() or {}).get('path',''))
+        recycle_file((request.get_json() or {}).get('path',''))
+        return jsonify(ok=True,recoverable=True)
+
+    def recycle_file(path):
+        p=target(path)
         if p==root or not p.exists():
             abort(400)
         with favorite_lock:
@@ -211,7 +215,7 @@ def create_app(root, network, password):
                 destination.rename(p)
                 favorites_write(values)
                 raise
-        return jsonify(ok=True,recoverable=True)
+    app.extensions['recycle_file']=recycle_file
 
     @app.route('/favorites', methods=['GET', 'POST'])
     def favorites():

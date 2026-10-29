@@ -12,6 +12,29 @@ class OrganizeTests(unittest.TestCase):
     call = SecurityTests.call
     login = SecurityTests.login
 
+    def test_merge_keeps_selected_and_can_undo(self):
+        self.login()
+        for name in ('a.txt','b.txt','c.txt'):
+            (self.root/name).write_bytes(b'identical fixture')
+        self.call('/duplicates','POST',json={})
+        for _ in range(100):
+            if not self.call('/duplicates').json['running']:
+                break
+            time.sleep(.02)
+        payload={'paths':['a.txt','b.txt','c.txt'],'keeper':'b.txt'}
+        (self.root/'c.txt').write_bytes(b'changed fixture')
+        self.assertEqual(self.call('/merge-duplicates','POST',json=payload).status_code,409)
+        self.assertTrue((self.root/'a.txt').exists())
+        payload['paths']=['a.txt','b.txt']
+        result=self.call('/merge-duplicates','POST',json=payload)
+        self.assertEqual(result.status_code,200)
+        self.assertTrue(result.json['complete'])
+        self.assertTrue((self.root/'b.txt').exists())
+        self.assertFalse((self.root/'a.txt').exists())
+        latest=self.call('/history').json[0]
+        self.assertEqual(self.call('/undo','POST',json={'id':latest['id']}).status_code,200)
+        self.assertEqual((self.root/'a.txt').read_bytes(),b'identical fixture')
+
     def test_library_duplicates_and_undo(self):
         self.login()
         (self.root/'folder').mkdir()

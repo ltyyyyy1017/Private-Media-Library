@@ -117,6 +117,41 @@ def install(app, root, target, metadata_dir, mutex, favorites_read, favorites_wr
             pass
     scan_lock = threading.Lock()
 
+    @app.post('/merge-duplicates')
+    def merge_duplicates():
+        body=request.get_json() or {}
+        paths=body.get('paths')
+        keeper=body.get('keeper')
+        if not isinstance(paths,list) or not 2<=len(paths)<=2000 or not all(isinstance(p,str) for p in paths):
+            abort(400)
+        if len(set(paths))!=len(paths) or keeper not in paths:
+            abort(400)
+        with mutex,scan_lock:
+            if state['running']:
+                abort(409,'Wait for scan completion.')
+            group=next((g for g in state['groups'] if set(paths).issubset(g['paths'])),None)
+            if not group or not group.get('signatures'):
+                abort(409,'Rescan before merging.')
+            # Validate every member including the survivor before changing anything.
+            for path in paths:
+                p=target(path)
+                if not p.is_file() or identity(p)!=group['signatures'].get(path):
+                    abort(409,'Files changed; rescan first.')
+            removed=[]
+            failed=[]
+            for path in paths:
+                if path==keeper:
+                    continue
+                try:
+                    if identity(target(keeper))!=group['signatures'][keeper] or identity(target(path))!=group['signatures'][path]:
+                        raise OSError('changed')
+                    app.extensions['recycle_file'](path)
+                    removed.append(path)
+                except Exception:
+                    failed.append(path)
+                    break
+            return jsonify(keeper=keeper,removed=removed,failed=failed,complete=len(removed)==len(paths)-1)
+
     @app.get('/duplicates')
     def duplicates():
         with scan_lock:
@@ -147,6 +182,12 @@ def install(app, root, target, metadata_dir, mutex, favorites_read, favorites_wr
                 try:
                     sizes = defaultdict(list)
                     files=list(walk())
+                    scan_signatures={}
+                    for f in files:
+                        try:
+                            scan_signatures[f['name']]=identity(target(f['name']))
+                        except OSError:
+                            pass
                     for f in files:
                         sizes[f['size']].append(f['name'])
                     candidates = [names for names in sizes.values() if len(names)>1]
@@ -213,6 +254,16 @@ def install(app, root, target, metadata_dir, mutex, favorites_read, favorites_wr
                         cache_file.write_text(json.dumps(cache),encoding='utf-8')
                         with scan_lock:
                             state['skipped']+=skipped
+                    for group in groups:
+                        signatures={}
+                        for path in group['paths']:
+                            try:
+                                current=identity(target(path))
+                                if current==scan_signatures.get(path):
+                                    signatures[path]=current
+                            except OSError:
+                                pass
+                        group['signatures']=signatures
                     with scan_lock:
                         state.update(groups=groups, phase='扫描完成 · 结果已保留',checked=state['total'])
                         temporary=results_file.with_suffix('.tmp')
