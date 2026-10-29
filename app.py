@@ -36,6 +36,12 @@ def create_app(root, network, password):
     thumbnail_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='thumbnails')
     thumbnail_jobs = set()
     image_lock = threading.Semaphore(1)
+    class ImageSlot:
+        def __enter__(self):
+            if not image_lock.acquire(blocking=False):
+                abort(503, 'Image conversion busy')
+        def __exit__(self,*args):
+            image_lock.release()
 
     def metadata_dir(name):
         p = root / name
@@ -106,7 +112,7 @@ def create_app(root, network, password):
     @app.after_request
     def headers(response):
         response.headers.update({'X-Content-Type-Options':'nosniff',
-            'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+            'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
             'Referrer-Policy':'no-referrer', 'Cache-Control':'no-store',
             'X-Frame-Options':'DENY'})
         return response
@@ -139,7 +145,7 @@ def create_app(root, network, password):
 
     @app.get('/assets/<name>')
     def assets(name):
-        if name not in ('video.min.js', 'video-js.min.css', 'library.js', 'library.css', 'features.js', 'features.css', 'mobile.js', 'mobile.css', 'batch.js', 'images.js', 'organize.js', 'organize.css', 'tags.js'):
+        if name not in ('video.min.js', 'video-js.min.css', 'library.js', 'library.css', 'features.js', 'features.css', 'mobile.js', 'mobile.css', 'batch.js', 'images.js', 'organize.js', 'organize.css', 'tags.js', 'workspace.js', 'workspace.css'):
             abort(404)
         return send_file(Path(__file__).with_name('assets') / name)
 
@@ -301,7 +307,7 @@ def create_app(root, network, password):
         key=hashlib.sha256((str(p)+str(stat.st_mtime_ns)+str(stat.st_size)).encode()).hexdigest()
         cache=metadata_dir('.hotspot-images')
         output=cache/(key+'.png')
-        with image_lock:
+        with ImageSlot():
             if not output.exists():
                 temporary=cache/(key+'.'+secrets.token_hex(6)+'.png')
                 from PIL import Image, ImageOps

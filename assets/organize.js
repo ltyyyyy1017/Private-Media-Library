@@ -92,6 +92,6 @@ open=async function(f){await qualityOpen(f);if(current!==f)return;compatButton.d
 $('download').before(compatButton);compatButton.hidden=true;
 watchThumbnail=function(cover,f,path){cover._thumbnailJob=async()=>{
   const endpoint='/thumbnail?path='+encodeURIComponent(path);let status;
-  try{for(let attempt=0;attempt<150&&cover.isConnected;attempt++){let response=await fetch(endpoint);status=response.status;if(status===200){let img=document.createElement('img');img.alt='视频预览图';img.src=endpoint;cover.prepend(img);for(let n of [...cover.childNodes])if(n.nodeType===3)n.remove();return}if(status!==202)break;await new Promise(resolve=>setTimeout(resolve,1000))}}catch{}
+  try{for(let attempt=0;attempt<150&&cover.isConnected;attempt++){let response=await fetch(endpoint);status=response.status;if(status===200){let img=document.createElement('img');img.alt='视频预览图';const blobURL=URL.createObjectURL(await response.blob());img.onload=img.onerror=()=>URL.revokeObjectURL(blobURL);img.src=blobURL;cover.prepend(img);for(let n of [...cover.childNodes])if(n.nodeType===3)n.remove();return}if(status!==202)break;await new Promise(resolve=>setTimeout(resolve,1000))}}catch{}
   if(cover.isConnected){let retry=button('封面失败 · 重试',()=>{retry.remove();cover._thumbnailJob()});retry.className='thumbnail-retry';retry.onclick=e=>{e.stopPropagation();retry.disabled=true;setTimeout(()=>{retry.remove();run(cover._thumbnailJob)},status===422?60000:1000)};cover.append(retry)}
 };observer.observe(cover)};
