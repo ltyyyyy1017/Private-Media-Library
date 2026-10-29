@@ -139,7 +139,7 @@ def create_app(root, network, password):
 
     @app.get('/assets/<name>')
     def assets(name):
-        if name not in ('video.min.js', 'video-js.min.css', 'library.js', 'library.css', 'features.js', 'features.css', 'mobile.js', 'mobile.css', 'batch.js', 'images.js', 'organize.js', 'organize.css'):
+        if name not in ('video.min.js', 'video-js.min.css', 'library.js', 'library.css', 'features.js', 'features.css', 'mobile.js', 'mobile.css', 'batch.js', 'images.js', 'organize.js', 'organize.css', 'tags.js'):
             abort(404)
         return send_file(Path(__file__).with_name('assets') / name)
 
@@ -405,6 +405,8 @@ def create_app(root, network, password):
             abort(409, 'Name already exists. Save under a new name.')
         return jsonify(ok=True)
 
+    from tags import install as install_tags
+    install_tags(app,target,metadata_dir,favorite_lock)
     from organize import install
     record_operation = install(app,root,target,metadata_dir,favorite_lock,favorites_read,favorites_write)
     from video_compat import install as install_video, VIDEO_EXTENSIONS
