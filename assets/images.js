@@ -1,6 +1,10 @@
 'use strict';
 function imageURL(path){return '/image?path='+encodeURIComponent(path)}
-function setImagePreview(img,path){let retried=false;img.onerror=()=>{if(!retried){retried=true;img.src=imageURL(path)+'&convert=1'}else{img.onerror=null;img.alt='此图片无法预览，请下载原文件';if(img.closest('#stage'))$('mediaHint').textContent='图片损坏、编码不支持或超过预览限制，请下载原文件查看。'}};img.src=imageURL(path)}
+const imageQueue=[];let activeImages=0;
+const imageObserver=new IntersectionObserver(entries=>{for(let e of entries)if(e.isIntersecting){imageObserver.unobserve(e.target);imageQueue.push(e.target);pumpImages()}},{rootMargin:'100px'});
+function pumpImages(){while(activeImages<2&&imageQueue.length){const img=imageQueue.shift();if(!img.isConnected)continue;activeImages++;loadImage(img,img._imagePath,()=>{activeImages--;pumpImages()})}}
+function loadImage(img,path,done=()=>{}){let retried=false,finished=false;const timer=setTimeout(()=>{img.onload=img.onerror=null;img.removeAttribute('src');img.alt='加载超时，请刷新重试';finish()},25000);function finish(){if(finished)return;finished=true;clearTimeout(timer);done()}img.onload=finish;img.onerror=()=>{if(!retried&&navigator.onLine){retried=true;img.src=imageURL(path)+'&convert=1'}else{img.onerror=null;img.alt='图片暂时无法加载，请检查连接或下载原文件';if(img.closest('#stage'))$('mediaHint').textContent='图片加载失败，请检查连接或下载原文件查看。';finish()}};img.src=imageURL(path)}
+function setImagePreview(img,path){if(img.closest('.card')){img._imagePath=path;imageObserver.observe(img)}else loadImage(img,path)}
 const beforeImageRender=render;
 render=function(){beforeImageRender();for(let card of document.querySelectorAll('.card')){let name=card.querySelector('h3').textContent,f=items.find(x=>x.name===name);if(!f||kind(f)!=='image')continue;let img=card.querySelector('.cover img');if(img)setImagePreview(img,filePath(f))}};
 const beforeImageOpen=open;

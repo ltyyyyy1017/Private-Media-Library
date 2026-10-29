@@ -24,8 +24,8 @@ class Manager:
         self.root = tk.Tk()
         self.root.title('热点文件柜 · 管理面板')
         if (BASE/'映屿.ico').exists():self.root.iconbitmap(str(BASE/'映屿.ico'))
-        self.root.geometry('690x560')
-        self.root.minsize(620,540)
+        self.root.geometry('690x610')
+        self.root.minsize(620,590)
         self.process = None
         self.folder = tk.StringVar()
         self.password = tk.StringVar()
@@ -64,6 +64,7 @@ class Manager:
         ttk.Button(row,text='复制访问地址',command=self.copy).pack(side='left')
         ttk.Label(frame,textvariable=self.status,wraplength=600).pack(anchor='w')
         ttk.Label(frame,text='访问地址：https://192.168.137.1:8443').pack(anchor='w',pady=8)
+        ttk.Button(frame,text='配置苹果设备证书（重新签发后需在设备信任）',command=self.apple_certificate).pack(anchor='w',pady=4)
         ttk.Button(frame,text='打开使用说明 / 证书信任说明',command=lambda:os.startfile(str(BASE/'README.md'))).pack(anchor='w')
         self.root.protocol('WM_DELETE_WINDOW',self.close)
         self.root.bind('<Unmap>',self.minimized)
@@ -71,6 +72,26 @@ class Manager:
         self.root.after(150,self.check_commands)
         if '--autostart' in sys.argv and self.tray:self.root.withdraw()
         self.root.after(1000,self.poll)
+
+    def apple_certificate(self):
+        if not messagebox.askyesno('配置苹果设备证书','这会重新签发本机 HTTPS 证书，短暂停止共享。需要在 iPhone / Mac 安装并信任导出的根证书。继续？'):return
+        was_running=self.process is not None
+        self.stop()
+        try:
+            state=BASE/'private-state';state.mkdir(exist_ok=True)
+            env=os.environ.copy();env['YINGYU_CERT_STATE']=str(state)
+            script="$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; & icacls.exe $env:YINGYU_CERT_STATE /inheritance:r /grant:r \"*$($sid):(OI)(CI)F\" '*S-1-5-18:(OI)(CI)F'; exit $LASTEXITCODE"
+            subprocess.run(['powershell.exe','-NoProfile','-Command',script],env=env,check=True,capture_output=True,creationflags=subprocess.CREATE_NO_WINDOW)
+            from tls_support import prepare_apple_certificate
+            public,fingerprint=prepare_apple_certificate(state)
+            exported=BASE/'苹果设备根证书.crt';exported.write_bytes(public.read_bytes())
+            guide=BASE/'苹果证书安装说明.txt'
+            guide.write_text('只传送本目录的 苹果设备根证书.crt，切勿传送 private-state 中的 key 文件。\n根证书 SHA-256：'+fingerprint+'\n\niPhone：通过可信渠道传送并安装证书描述文件，然后 设置→通用→关于本机→证书信任设置，启用 Yingyu Private Hotspot CA 的完全信任。\nMac：在钥匙串访问中导入该证书，打开“信任”，将 SSL 设为始终信任。\n完成后关闭旧网页，重新访问 https://192.168.137.1:8443/ 。\n只在你自己的设备上信任并核对指纹。\n',encoding='utf-8')
+            os.startfile(str(guide))
+            subprocess.Popen(['explorer.exe','/select,',str(exported)],creationflags=subprocess.CREATE_NO_WINDOW)
+        except Exception:
+            messagebox.showerror('配置未完成','证书配置失败，请检查程序目录写入权限；共享保持停止。');return
+        if was_running:self.start()
 
     def save_settings(self):
         try:save_preferences(self.folder.get(),self.password.get(),self.remember.get())
@@ -199,14 +220,18 @@ class Manager:
                 detail=(BASE/'manager.log').read_text(encoding='utf-8',errors='replace')[-3500:]
                 if detail:messagebox.showerror('启动或运行信息',detail)
             else:
-                # TCP availability alone is not reported as verified hotspot isolation.
-                import socket
-                try:
-                    with socket.create_connection(('192.168.137.1',8443),timeout=.2):pass
-                    self.status.set('共享服务已启动。设备连接电脑热点后，打开下面的地址并登录。首次使用请按说明核验证书。')
-                    self.set_state('active')
-                except OSError:
-                    if self.sharing_state=='active':self.set_state('error')
+                # Complete a verified TLS request instead of aborting one handshake per second.
+                import time
+                if time.monotonic()-getattr(self,'last_health',0)>=5:
+                    self.last_health=time.monotonic()
+                    from tls_support import check_service
+                    try:
+                        if check_service(BASE):
+                            self.status.set('共享服务正在响应 HTTPS 请求。苹果设备需完成证书信任。')
+                            self.set_state('active')
+                    except (OSError,ValueError):
+                        self.status.set('暂时无法完成 HTTPS 检查；若持续失败，请停止后重新开始共享。')
+                        self.set_state('error')
         self.root.after(1000,self.poll)
 
     def stop(self):

@@ -463,8 +463,8 @@ def run_server():
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes
     print('Certificate SHA256:', x509.load_pem_x509_certificate(cert.read_bytes()).fingerprint(hashes.SHA256()).hex(':'))
-    server = Server((args.ip, 8443), create_app(args.root, args.network, password), numthreads=8,
-                    request_queue_size=16, timeout=30)
+    server = Server((args.ip, 8443), create_app(args.root, args.network, password), numthreads=24,
+                    request_queue_size=128, timeout=30)
     adapter = BuiltinSSLAdapter(str(cert), str(key))
     adapter.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     adapter.context.minimum_version = ssl.TLSVersion.TLSv1_2
