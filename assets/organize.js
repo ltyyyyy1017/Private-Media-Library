@@ -2,10 +2,11 @@
 let wholeLibrary=false;
 const folderLoad=load;
 load=async function(){
+  const version=loadVersion;
   if(!wholeLibrary||filter==='favorites')return folderLoad();
   dir='';selectedFiles.clear();
   favoritePaths=new Set((await(await api('/favorites')).json()).map(x=>x.path));
-  items=await(await api('/library')).json();
+  let rows=await(await api('/library')).json();if(version!==loadVersion)return;items=rows.map(f=>({...f,_path:f.name}));
   $('crumb').textContent='全库虚拟分类 · 原文件位置不变';
   render();$('count').textContent=$('grid').children.length+' 项内容 · 全库';
 };
@@ -63,17 +64,17 @@ $('nav').append(button('≡ 精确重复查找',async()=>{
 }));
 // A remux only changes the container; decoded image quality stays unchanged.
 const compatButton=button('无损兼容播放',async()=>{
-  const f=current,path=join(f.name),endpoint='/video-compatible?path='+encodeURIComponent(path);
+  const f=current,instance=player,path=filePath(f),endpoint='/video-compatible?path='+encodeURIComponent(path);
   compatButton.disabled=true;
   try{await post(endpoint,{});$('mediaHint').textContent='正在本机无损封装，保留原分辨率和音视频编码…';
     for(let i=0;i<620&&current===f&&$('viewer').open;i++){
-      let response=await api(endpoint+'&status=1');if(response.status===200){if(player){player.src({src:endpoint,type:'video/mp4'});player.load()}$('mediaHint').textContent='无损兼容播放：没有降低画质。编码仍不被浏览器支持时，请下载原文件。';return}
+      let response=await api(endpoint+'&status=1');if(current!==f||player!==instance||!$('viewer').open)return;if(response.status===200){if(player){player.src({src:endpoint,type:'video/mp4'});player.load()}$('mediaHint').textContent='无损兼容播放：没有降低画质。编码仍不被浏览器支持时，请下载原文件。';return}
       await new Promise(resolve=>setTimeout(resolve,1000));
     }
-  }finally{compatButton.disabled=false}
+  }catch(e){if(current===f)$('mediaHint').textContent=e.message;throw e}finally{compatButton.disabled=false}
 });
 const qualityOpen=open;
-open=async function(f){await qualityOpen(f);if(current!==f)return;compatButton.hidden=kind(f)!=='video';if(kind(f)==='video'){$('mediaHint').textContent='原始画质播放 · 无降码率、无降分辨率 · 无法播放时可尝试无损兼容播放';if(/\.(ts|mts|m2ts)$/i.test(f.name))compatButton.click();}if(kind(f)==='image'){let img=$('stage').querySelector('img');if(img){img.onclick=()=>{img.classList.toggle('zoom');img.style.width=img.classList.contains('zoom')?img.naturalWidth+'px':''};$('mediaHint').textContent+=' · 点击按原始像素查看；小图放大不能增加细节';}}};
+open=async function(f){await qualityOpen(f);if(current!==f)return;compatButton.disabled=false;compatButton.hidden=kind(f)!=='video';if(kind(f)==='video'){$('mediaHint').textContent='原始画质播放 · 无降码率、无降分辨率 · 无法播放时可尝试无损兼容播放';if(/\.(ts|mts|m2ts)$/i.test(f.name))compatButton.click();}if(kind(f)==='image'){let img=$('stage').querySelector('img');if(img){img.onclick=()=>{img.classList.toggle('zoom');img.style.width=img.classList.contains('zoom')?img.naturalWidth+'px':''};$('mediaHint').textContent+=' · 点击按原始像素查看；小图放大不能增加细节';}}};
 $('download').before(compatButton);compatButton.hidden=true;
 watchThumbnail=function(cover,f,path){cover._thumbnailJob=async()=>{
   const endpoint='/thumbnail?path='+encodeURIComponent(path);let status;
