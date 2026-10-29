@@ -1,19 +1,31 @@
 'use strict';
-let wholeLibrary=false;
+let wholeLibrary=false,libraryRefresh=false;
 const folderLoad=load;
 load=async function(){
   const version=loadVersion;
   if(!wholeLibrary||filter==='favorites')return folderLoad();
   dir='';selectedFiles.clear();
   favoritePaths=new Set((await(await api('/favorites')).json()).map(x=>x.path));
-  let rows=await(await api('/library')).json();if(version!==loadVersion)return;items=rows.map(f=>({...f,_path:f.name}));
+  let rows=[],generation='',offset=0;const refresh=libraryRefresh;libraryRefresh=false;
+  $('crumb').textContent='正在建立全库索引，可切换回文件夹视图…';
+  for(let attempts=0;attempts<3600;attempts++){
+    let response=await api('/library?background=1'+(refresh&&attempts===0?'&refresh=1':'')+(generation?'&generation='+encodeURIComponent(generation)+'&offset='+offset:''));
+    if(version!==loadVersion)return;
+    let page=await response.json();if(version!==loadVersion)return;
+    if(Array.isArray(page)){rows=page;break}
+    if(response.status===202){await new Promise(r=>setTimeout(r,1000));continue}
+    generation=page.generation;rows.push(...page.rows);offset=rows.length;
+    $('crumb').textContent='正在加载全库：'+offset+'/'+page.total;
+    if(offset>=page.total)break;
+  }
+  if(version!==loadVersion)return;items=rows.map(f=>({...f,_path:f.name}));
   $('crumb').textContent='全库虚拟分类 · 原文件位置不变';
   render();$('count').textContent=$('grid').children.length+' 项内容 · 全库';
 };
-const scope=button('切换全库视图',async()=>{wholeLibrary=!wholeLibrary;dir='';scope.textContent=wholeLibrary?'返回文件夹视图':'切换全库视图';$('search').placeholder=wholeLibrary?'搜索全库名称或路径…':'搜索当前文件夹…';await load()});
-$('heading').after(scope);
+const scope=button('切换全库视图',async()=>{wholeLibrary=!wholeLibrary;libraryRefresh=true;dir='';scope.textContent=wholeLibrary?'返回文件夹视图':'切换全库视图';$('search').placeholder=wholeLibrary?'搜索全库名称或路径…':'搜索当前文件夹…';await load()});
+$('heading').after(scope);scope.after(button('刷新全库索引',async()=>{wholeLibrary=true;libraryRefresh=true;dir='';await load()}));
 document.querySelectorAll('nav button[data-type]').forEach(b=>b.onclick=()=>run(async()=>{
-  wholeLibrary=b.dataset.type!=='all';dir='';filter=b.dataset.type;
+  wholeLibrary=b.dataset.type!=='all';libraryRefresh=true;dir='';filter=b.dataset.type;
   scope.textContent=wholeLibrary?'返回文件夹视图':'切换全库视图';
   $('search').placeholder=wholeLibrary?'搜索全库名称或路径…':'搜索当前文件夹…';
   document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));

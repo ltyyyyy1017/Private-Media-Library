@@ -103,8 +103,51 @@ def install(app, root, target, metadata_dir, mutex, favorites_read, favorites_wr
                         continue
                     raise
 
+    library_lock=threading.Lock()
+    library_state=dict(running=False,ready=False,rows=[],generation='',finished=0,error=False)
+
+    @app.after_request
+    def invalidate_library(response):
+        if request.path in ('/move','/rename','/delete','/upload','/undo','/merge-duplicates') and request.method not in ('GET','HEAD') and response.status_code<300:
+            with library_lock:
+                library_state['finished']=0
+        return response
+
     @app.get('/library')
     def library():
+        if request.args.get('background')=='1':
+            with library_lock:
+                token=request.args.get('generation')
+                if request.args.get('refresh')=='1' and not token:
+                    library_state['finished']=0
+                if token:
+                    if token!=library_state['generation'] or not library_state['ready']:
+                        abort(409)
+                elif not library_state['running'] and (not library_state['ready'] or time.monotonic()-library_state['finished']>30):
+                    library_state.update(running=True,error=False)
+                    def collect():
+                        with app.app_context():
+                            try:
+                                rows=list(walk())
+                                with library_lock:
+                                    library_state.update(rows=rows,generation=secrets.token_hex(16),ready=True,finished=time.monotonic())
+                            except Exception:
+                                with library_lock:
+                                    library_state['error']=True
+                            finally:
+                                with library_lock:
+                                    library_state['running']=False
+                    threading.Thread(target=collect,daemon=True,name='library-index').start()
+                if library_state['running']:
+                    return jsonify(pending=True),202
+                if library_state['error']:
+                    abort(503)
+                try:
+                    offset=max(0,int(request.args.get('offset','0')))
+                except ValueError:
+                    abort(400)
+                rows=library_state['rows']
+                return jsonify(rows=rows[offset:offset+500],total=len(rows),generation=library_state['generation'])
         return jsonify(list(walk()))
 
     results_file=safe_metadata(metadata_dir('.hotspot-organize')/'duplicates.json')
