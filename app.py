@@ -1,6 +1,7 @@
 """HTTPS file browser. Start through Start.ps1, not directly."""
 import argparse
 import datetime
+import errno
 import ipaddress
 import os
 import json
@@ -14,6 +15,7 @@ import threading
 import time
 
 from flask import Flask, abort, jsonify, request, send_file, session
+from werkzeug.exceptions import BadRequest, ClientDisconnected, RequestEntityTooLarge
 from werkzeug.security import generate_password_hash, check_password_hash
 
 
@@ -398,21 +400,66 @@ def create_app(root, network, password):
 
     @app.put('/upload')
     def upload():
-        p = target(request.args.get('path',''))
-        if p == root or not p.parent.is_dir():
-            abort(400)
-        # Existing files are never silently replaced. Changes become new versions.
+        def failure(status, message):
+            return jsonify(error=message), status
+
+        name = request.args.get('path', '')
         try:
-            with p.open('xb') as out:
-                try:
-                    while chunk := request.stream.read(1024 * 1024):
-                        out.write(chunk)
-                except BaseException:
-                    out.close()
-                    p.unlink(missing_ok=True)
-                    raise
+            destination = target(name)
+        except BadRequest:
+            return failure(400, '文件名或保存路径不符合 Windows 命名规则。')
+        if destination == root or name.endswith('/'):
+            return failure(400, '请选择有效的文件名。')
+
+        temporary = None
+        try:
+            if not destination.parent.is_dir():
+                return failure(404, '保存目录已移动或删除，请刷新后选择目录。')
+            original_parent = destination.parent.stat()
+            if destination.exists():
+                return failure(409, '同名文件已存在，请改名后上传。')
+            staging = metadata_dir('.hotspot-uploads') / (secrets.token_hex(16) + '.part')
+            limit = app.config['MAX_CONTENT_LENGTH']
+            received = 0
+            with staging.open('xb') as out:
+                temporary = staging
+                while chunk := request.stream.read(1024 * 1024):
+                    received += len(chunk)
+                    if received > limit:
+                        raise RequestEntityTooLarge()
+                    out.write(chunk)
+            if request.content_length is not None and received != request.content_length:
+                raise ClientDisconnected()
+
+            # Keep partial uploads outside the visible library, and commit only
+            # after rechecking the folder under the same lock used for moves.
+            with favorite_lock:
+                destination = target(name)
+                if not destination.parent.is_dir() or not os.path.samestat(original_parent, destination.parent.stat()):
+                    return failure(404, '上传期间保存目录发生了变化，请刷新后重试。')
+                if os.name == 'nt':
+                    staging.rename(destination)  # Windows refuses an existing destination.
+                else:
+                    os.link(staging, destination)  # Atomic no-overwrite commit on POSIX.
         except FileExistsError:
-            abort(409, 'Name already exists. Save under a new name.')
+            return failure(409, '同名文件已存在，请改名后上传。')
+        except (ClientDisconnected, ConnectionError, TimeoutError):
+            return failure(400, '文件没有传完整，请保持热点连接后重新上传。')
+        except RequestEntityTooLarge:
+            return failure(413, '文件超过 4 GB 上传限制。')
+        except PermissionError:
+            return failure(403, '电脑无法写入共享目录，请检查文件夹权限或文件占用。')
+        except FileNotFoundError:
+            return failure(404, '保存目录已移动或删除，请刷新后选择目录。')
+        except OSError as error:
+            if error.errno == errno.ENOSPC or getattr(error, 'winerror', None) in (39, 112):
+                return failure(507, '电脑磁盘空间不足。')
+            if error.errno in (errno.EINVAL, errno.ENAMETOOLONG) or getattr(error, 'winerror', None) in (123, 206):
+                return failure(400, '文件名无效或保存路径过长，请缩短文件名或换一个目录。')
+            raise
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         return jsonify(ok=True)
 
     from tags import install as install_tags
@@ -455,6 +502,7 @@ def run_server():
     import ssl
     from cheroot.wsgi import Server
     from cheroot.ssl.builtin import BuiltinSSLAdapter
+    from tls_support import HotspotConnection
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', required=True)
     parser.add_argument('--ip', required=True)
@@ -471,6 +519,7 @@ def run_server():
     print('Certificate SHA256:', x509.load_pem_x509_certificate(cert.read_bytes()).fingerprint(hashes.SHA256()).hex(':'))
     server = Server((args.ip, 8443), create_app(args.root, args.network, password), numthreads=24,
                     request_queue_size=128, timeout=30)
+    server.ConnectionClass = HotspotConnection
     adapter = BuiltinSSLAdapter(str(cert), str(key))
     adapter.context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     adapter.context.minimum_version = ssl.TLSVersion.TLSv1_2

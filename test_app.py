@@ -32,6 +32,24 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(self.call('/list').status_code, 401)
         self.assertEqual(self.call('/login','POST',json={'password':'bad'}).status_code,401)
 
+    def test_upload_errors_and_truncated_body(self):
+        self.login()
+        invalid = self.call('/upload?path=bad%3Aname.txt','PUT',data=b'file')
+        self.assertEqual(invalid.status_code,400)
+        self.assertIn('Windows',invalid.json['error'])
+        missing = self.call('/upload?path=missing/file.txt','PUT',data=b'file')
+        self.assertEqual(missing.status_code,404)
+        interrupted = self.client.put('/upload?path=partial.txt',data=b'only part',
+            base_url='https://192.168.137.1:8443',
+            environ_overrides={'REMOTE_ADDR':'192.168.137.2','CONTENT_LENGTH':'100'},
+            headers={'Origin':'https://192.168.137.1:8443','X-CSRF-Token':self.token})
+        self.assertEqual(interrupted.status_code,400)
+        self.assertIn('没有传完整',interrupted.json['error'])
+        self.assertFalse((self.root/'partial.txt').exists())
+        self.assertEqual(list((self.root/'.hotspot-uploads').iterdir()),[])
+        self.assertEqual(self.call('/upload?path=partial.txt','PUT',data=b'complete').status_code,200)
+        self.assertEqual((self.root/'partial.txt').read_bytes(),b'complete')
+
     def test_files(self):
         self.login()
         self.assertEqual(self.call('/mkdir','POST',json={'path':'照片'}).status_code,200)

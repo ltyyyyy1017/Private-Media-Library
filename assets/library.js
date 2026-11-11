@@ -5,8 +5,36 @@ const join=n=>dir?dir+'/'+n:n,url=p=>'/file?path='+encodeURIComponent(p),size=n=
 let loadVersion=0;
 const filePath=f=>f._path??join(f.name);
 function toast(s){$('toast').textContent=s;$('toast').hidden=false;setTimeout(()=>$('toast').hidden=true,5000)}
-async function api(path,options={}){options.headers={...options.headers};if(options.method)options.headers['X-CSRF-Token']=csrf;let r;try{for(let attempt=0;attempt<3;attempt++){try{r=await fetch(path,options);if(r.status!==503||options.method||attempt===2)break}catch(e){if(options.method||attempt===2)throw e}await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)))}}catch{showConnectionProblem();throw Error('连接中断：请确认手机仍连接电脑热点、共享服务仍在运行。写入操作请刷新核对结果后再试。')}if(!r.ok){if(r.status===401&&!$('login').open)$('login').showModal();throw Error(({401:'密码错误或登录已过期',403:'访问被拒绝',404:'文件已移动或删除，请刷新列表后重试',409:'文件状态已变化或名称冲突，请刷新后重试',422:'无法解码或无损转换此文件，请下载原文件播放',500:'服务器处理失败，请检查文件访问权限及磁盘空间',503:'服务忙，请稍后重试',413:'文件过大',429:'尝试过多，请一分钟后重试'})[r.status]||'操作失败 '+r.status)}return r}
-const run=f=>Promise.resolve().then(f).catch(e=>{if(isConnectionError(e)){showConnectionProblem();toast('连接未完成，请查看页面顶部的连接提示。')}else toast(e.message)});let post=(path,data)=>api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+class ConnectionRequestError extends Error {}
+async function api(path,options={}){
+    const method=(options.method||'GET').toUpperCase();
+    const readOnly=['GET','HEAD'].includes(method)||(method==='POST'&&path==='/tag-files');
+    const headers={...options.headers};
+    if(!['GET','HEAD'].includes(method))headers['X-CSRF-Token']=csrf;
+    let response;
+    for(let attempt=0;attempt<(readOnly?3:1);attempt++){
+        const controller=readOnly&&!options.signal?new AbortController():null;
+        const timer=controller?setTimeout(()=>controller.abort(),15000):null;
+        try{
+            response=await fetch(path,{...options,headers,signal:options.signal||controller?.signal});
+            if(!readOnly||![408,502,503,504].includes(response.status)||attempt===2)break;
+            if(response.body)await response.body.cancel().catch(()=>{});
+        }catch(error){
+            if(options.signal?.aborted)throw error;
+            if(!readOnly||attempt===2){
+                showConnectionProblem();
+                throw new ConnectionRequestError(readOnly?'连接中断，正在检测电脑共享服务。':'连接中断，请先核对操作结果再重试。');
+            }
+        }finally{clearTimeout(timer)}
+        await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)));
+    }
+    if(response.ok)return response;
+    if(response.status===401&&!$('login').open)$('login').showModal();
+    const error=new Error(({401:'密码错误或登录已过期',403:'访问被拒绝',404:'文件已移动或删除，请刷新列表后重试',409:'文件状态已变化或名称冲突，请刷新后重试',422:'无法解码或无损转换此文件，请下载原文件播放',500:'服务器处理失败，请检查文件访问权限及磁盘空间',503:'服务忙，请稍后重试',413:'文件过大',429:'尝试过多，请一分钟后重试'})[response.status]||'操作失败 '+response.status);
+    error.status=response.status;
+    throw error;
+}
+const run=f=>Promise.resolve().then(f).catch(e=>{if(isConnectionError(e)){showConnectionProblem();toast('连接中断，正在检测共享服务。')}else toast(e.message)});let post=(path,data)=>api(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
 function button(label,fn){let b=document.createElement('button');b.textContent=label;b.onclick=()=>{if(b.disabled)return;b.disabled=true;return run(fn).finally(()=>b.disabled=false)};return b}
 function remember(key,val){try{localStorage.setItem(key,String(val))}catch{}}
 function recalled(key){try{return localStorage.getItem(key)}catch{return null}}
@@ -14,30 +42,126 @@ async function load(){const version=loadVersion,folder=dir;let rows=await(await 
 let shownLimit=120,renderContext='';const moreFiles=button('再显示 120 项',()=>{shownLimit+=120;render()});$('grid').after(moreFiles);
 function render(){let context=[dir,filter,$('search').value,$('sort').value].join('|');if(context!==renderContext){shownLimit=120;renderContext=context}let q=$('search').value.toLowerCase(),rows=items.filter(f=>(filter==='all'||kind(f)===filter||f.directory)&&f.name.toLowerCase().includes(q));rows.sort((a,b)=>Number(b.directory)-Number(a.directory)||($('sort').value==='new'?b.modified-a.modified:$('sort').value==='size'?b.size-a.size:a.name.localeCompare(b.name)));$('grid').replaceChildren();$('count').textContent=rows.length+' 项内容 · 当前文件夹';$('empty').hidden=!!rows.length;moreFiles.hidden=rows.length<=shownLimit;moreFiles.textContent='再显示 120 项（已显示 '+Math.min(shownLimit,rows.length)+' / '+rows.length+'）';for(let f of rows.slice(0,shownLimit)){if(!f._path)f._path=filePath(f);let card=document.createElement('article');card.className='card';card.dataset.path=filePath(f);card.tabIndex=0;let cover=document.createElement('div');cover.className='cover '+kind(f);cover.textContent=({video:'▷',image:'▧',text:'▤',folder:'▰',other:'▱'})[kind(f)];if(kind(f)==='image'){cover.textContent='';let im=document.createElement('img');im.loading='lazy';im.alt=f.name;cover.append(im)}let badge=document.createElement('span');badge.className='badge';badge.textContent=f.directory?'文件夹':({video:'视频',image:'图片',text:'TXT',other:'文档'})[kind(f)];cover.append(badge);let title=document.createElement('h3');title.textContent=f.name;title.title=f.name;let meta=document.createElement('p');meta.textContent=(f.directory?'文件夹':size(f.size))+' · '+new Date(f.modified*1000).toLocaleDateString();card.append(cover,title,meta);card.onclick=()=>run(()=>f.directory?(dir=filePath(f),load()):open(f));card.onkeydown=e=>{if(e.key==='Enter')card.click()};$('grid').append(card)}}
 function clean(){if(player){player.dispose();player=null}$('stage').replaceChildren()}
-async function open(f){clean();current=f;let path=filePath(f),type=kind(f);$('title').textContent=f.name;$('mediaType').textContent=({video:'视频放映厅',image:'图片相册',text:'小说与文字',other:'文档'})[type];$('download').href=url(path)+'&download=1';$('mediaHint').textContent='';if(!$('viewer').open)$('viewer').showModal();if(type==='video'){let v=document.createElement('video');v.className='video-js';v.controls=true;v.playsInline=true;v.preload='metadata';v.src=url(path);$('stage').append(v);player=videojs(v,{fluid:true,playbackRates:[.5,.75,1,1.25,1.5,2]});let instance=player;instance.on('loadedmetadata',()=>{let t=Number(recalled('video:'+path));if(t&&t<instance.duration()-3)instance.currentTime(t)});instance.on('timeupdate',()=>remember('video:'+path,instance.currentTime()));instance.on('error',()=>{$('mediaHint').textContent='浏览器不支持此视频编码，请下载后使用本机播放器打开。'});$('mediaHint').textContent='支持倍速、拖动进度、全屏；在此浏览器自动记住播放位置。'}else if(type==='image'){let img=document.createElement('img');img.alt=f.name;img.onclick=()=>img.classList.toggle('zoom');$('stage').append(img);$('mediaHint').textContent='点击图片切换放大，使用左右按钮浏览同文件夹的图片。'}else if(type==='text'){if(f.size>20*1024*1024){$('mediaHint').textContent='TXT 超过 20 MB，请下载阅读。';return}let response=await api(url(path)),buffer=await response.arrayBuffer();if(current!==f||!$('viewer').open)return;let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(buffer)}catch{text=new TextDecoder('gb18030').decode(buffer)}let tools=document.createElement('div');tools.className='reader-tools';let article=document.createElement('article');article.className='reader';article.textContent=text;tools.append(button('A−',()=>article.style.fontSize=Math.max(14,parseFloat(getComputedStyle(article).fontSize)-2)+'px'),button('A＋',()=>article.style.fontSize=Math.min(36,parseFloat(getComputedStyle(article).fontSize)+2)+'px'),button('日间 / 夜间',()=>article.classList.toggle('dark')),button('编辑文字',()=>{article.contentEditable=article.contentEditable!=='true';article.focus()}),button('另存 TXT',async()=>{let name=prompt('新文件名（不覆盖原文件）',f.name.replace(/\.txt$/i,'-编辑.txt'));if(!name||/[\\/]/.test(name)||!name.toLowerCase().endsWith('.txt'))return;await uploadFile(new File([article.innerText],name,{type:'text/plain'}));toast('已保存');await load()}));let chapters=document.createElement('select');chapters.setAttribute('aria-label','章节');chapters.add(new Option('跳转章节',''));let regex=/^\s*(第[零一二三四五六七八九十百千万\d]+[章节卷回部].{0,60})$/gm,m;while((m=regex.exec(text))&&chapters.length<1000)chapters.add(new Option(m[1],String(m.index)));chapters.onchange=()=>{let index=Number(chapters.value),node=article.firstChild;if(!node||node.nodeType!==3)return;let range=document.createRange();range.setStart(node,Math.min(index,node.length));range.setEnd(node,Math.min(index+1,node.length));article.scrollTop+=range.getBoundingClientRect().top-article.getBoundingClientRect().top-25};tools.append(chapters);$('stage').append(tools,article);requestAnimationFrame(()=>article.scrollTop=Number(recalled('read:'+path))||0);article.onscroll=()=>remember('read:'+path,article.scrollTop);$('mediaHint').textContent='支持 UTF-8 / GB18030 文本、章节跳转和本机阅读进度。编辑后请另存。'}else{$('mediaHint').textContent='此格式请下载后用设备上的应用查看。'}}
-function close(){clean();$('viewer').close();current=null}$('close').onclick=close;$('viewer').addEventListener('cancel',()=>{clean();current=null});
+async function open(f){clean();current=f;let path=filePath(f),type=kind(f);$('title').textContent=f.name;$('mediaType').textContent=({video:'视频放映厅',image:'图片相册',text:'小说与文字',other:'文档'})[type];$('download').href=url(path)+'&download=1';$('mediaHint').textContent='';if(!$('viewer').open)$('viewer').showModal();if(type==='video'){let v=document.createElement('video');v.className='video-js';v.controls=true;v.playsInline=true;v.preload='metadata';v.src=url(path);$('stage').append(v);player=videojs(v,{fluid:true,playbackRates:[.5,.75,1,1.25,1.5,2]});let instance=player;instance.on('loadedmetadata',()=>{let t=Number(recalled('video:'+path));if(t&&t<instance.duration()-3)instance.currentTime(t)});instance.on('timeupdate',()=>remember('video:'+path,instance.currentTime()));instance.on('error',()=>{$('mediaHint').textContent='浏览器不支持此视频编码，请下载后使用本机播放器打开。'});$('mediaHint').textContent='支持倍速、拖动进度、全屏；在此浏览器自动记住播放位置。'}else if(type==='image'){let img=document.createElement('img');img.alt=f.name;img.onclick=()=>img.classList.toggle('zoom');$('stage').append(img);$('mediaHint').textContent='点击图片切换放大，使用左右按钮浏览同文件夹的图片。'}else if(type==='text'){if(f.size>20*1024*1024){$('mediaHint').textContent='TXT 超过 20 MB，请下载阅读。';return}let response=await api(url(path)),buffer=await response.arrayBuffer();if(current!==f||!$('viewer').open)return;let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(buffer)}catch{text=new TextDecoder('gb18030').decode(buffer)}let tools=document.createElement('div');tools.className='reader-tools';let article=document.createElement('article');article.className='reader';article.textContent=text;tools.append(button('A−',()=>article.style.fontSize=Math.max(14,parseFloat(getComputedStyle(article).fontSize)-2)+'px'),button('A＋',()=>article.style.fontSize=Math.min(36,parseFloat(getComputedStyle(article).fontSize)+2)+'px'),button('日间 / 夜间',()=>article.classList.toggle('dark')),button('编辑文字',()=>{article.contentEditable=article.contentEditable!=='true';article.focus()}),button('另存 TXT',async()=>{let name=prompt('新文件名（不覆盖原文件）',path.split('/').pop().replace(/\.txt$/i,'-编辑.txt'));if(!name||/[\\/]/.test(name)||!name.toLowerCase().endsWith('.txt'))return;const saved=await uploadFile(new File([article.innerText],name,{type:'text/plain'}),path.split('/').slice(0,-1).join('/'));toast('已保存为 '+saved);await load()}));let chapters=document.createElement('select');chapters.setAttribute('aria-label','章节');chapters.add(new Option('跳转章节',''));let regex=/^\s*(第[零一二三四五六七八九十百千万\d]+[章节卷回部].{0,60})$/gm,m;while((m=regex.exec(text))&&chapters.length<1000)chapters.add(new Option(m[1],String(m.index)));chapters.onchange=()=>{let index=Number(chapters.value),node=article.firstChild;if(!node||node.nodeType!==3)return;let range=document.createRange();range.setStart(node,Math.min(index,node.length));range.setEnd(node,Math.min(index+1,node.length));article.scrollTop+=range.getBoundingClientRect().top-article.getBoundingClientRect().top-25};tools.append(chapters);$('stage').append(tools,article);requestAnimationFrame(()=>article.scrollTop=Number(recalled('read:'+path))||0);article.onscroll=()=>remember('read:'+path,article.scrollTop);$('mediaHint').textContent='支持 UTF-8 / GB18030 文本、章节跳转和本机阅读进度。编辑后请另存。'}else{$('mediaHint').textContent='此格式请下载后用设备上的应用查看。'}}
+function close(){clean();$('viewer').close();current=null}
+let dismissViewer=()=>close();
+$('close').onclick=()=>dismissViewer();
+$('viewer').addEventListener('cancel',event=>{event.preventDefault();dismissViewer()});
 for(let [id,step] of [['prev',-1],['next',1]])$(id).onclick=()=>run(()=>{let rows=items.filter(f=>kind(f)===kind(current)),i=rows.indexOf(current);if(i+step<0||i+step>=rows.length)return toast('已经到头了');return open(rows[i+step])});
 $('rename').onclick=()=>run(async()=>{let name=prompt('新的文件名',current.name);if(!name||/[\\/]/.test(name))return;await post('/rename',{path:filePath(current),new:join(name)});close();await load()});
 $('loginForm').onsubmit=e=>{e.preventDefault();run(async()=>{try{csrf=(await(await post('/login',{password:$('password').value})).json()).csrf;$('password').value='';$('login').close();await load()}catch(e){$('loginError').textContent=e.message}})};
 $('login').addEventListener('cancel',e=>e.preventDefault());$('logout').onclick=()=>run(async()=>{await post('/logout',{});location.reload()});$('search').oninput=render;$('sort').onchange=render;document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{filter=b.dataset.type;document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x===b));$('heading').textContent=b.textContent.slice(2);render()});
 $('mkdir').onclick=()=>run(async()=>{let name=prompt('文件夹名称');if(!name||/[\\/]/.test(name))return;await post('/mkdir',{path:join(name)});await load()});
-function uploadFile(file){return new Promise((resolve,reject)=>{let xhr=new XMLHttpRequest();xhr.open('PUT','/upload?path='+encodeURIComponent(join(file.name)));xhr.setRequestHeader('X-CSRF-Token',csrf);xhr.upload.onprogress=e=>{if(e.lengthComputable)$('progress').value=e.loaded/e.total*100};xhr.onload=()=>xhr.status===200?resolve():reject(Error(file.name+' 上传失败：'+(xhr.status===409?'同名文件已存在':xhr.status)));xhr.onerror=()=>reject(Error('网络断开，上传失败'));xhr.send(file)})}
-async function upload(files){if(uploading)return toast('请等待当前上传完成');uploading=true;$('uploadStatus').hidden=false;let failures=[];try{for(let [i,file] of [...files].entries()){$('uploadText').textContent=`${i+1}/${files.length} 正在上传 ${file.name}`;$('progress').value=0;try{await uploadFile(file)}catch(e){failures.push(e.message)}}await load();toast(failures.length?failures.join('；'):'全部上传完成')}finally{uploading=false;$('uploadStatus').hidden=true;$('upload').value=''}}
+function windowsUploadName(name){
+    const replacements={'<':'＜','>':'＞',':':'：','"':'＂','/':'／','\\':'＼','|':'｜','?':'？','*':'＊'};
+    let safe=name.replace(/[<>:"/\\|?*\x00-\x1f]/g,char=>replacements[char]||'_').replace(/[ .]+$/,'');
+    if(!safe)safe='未命名文件';
+    const stem=safe.split('.')[0].trimEnd();
+    if(/^(con|prn|aux|nul|conin\$|conout\$|com[0-9¹²³]|lpt[0-9¹²³])$/i.test(stem)||/^\.hotspot-/i.test(safe))safe='_'+safe;
+    if(safe.length>255)throw Error('文件名太长，请缩短至 255 个字符以内。');
+    return safe;
+}
+function uploadFile(file,destination=dir){
+    const name=windowsUploadName(file.name);
+    const path=destination?destination+'/'+name:name;
+    return new Promise((resolve,reject)=>{
+        const xhr=new XMLHttpRequest();
+        xhr.open('PUT','/upload?path='+encodeURIComponent(path));
+        xhr.responseType='json';
+        xhr.setRequestHeader('X-CSRF-Token',csrf);
+        xhr.upload.onprogress=event=>{if(event.lengthComputable)$('progress').value=event.loaded/event.total*100};
+        xhr.onload=()=>{
+            if(xhr.status===200){resolve(name);return}
+            if(xhr.status===401&&!$('login').open)$('login').showModal();
+            const fallback={400:'文件名或上传数据无效',401:'登录已过期，请重新登录后上传',403:'没有权限写入目录',404:'保存目录已不存在',409:'同名文件已存在',413:'文件超过上传限制',507:'电脑磁盘空间不足'};
+            reject(Error(xhr.response?.error||fallback[xhr.status]||'服务器返回 '+xhr.status));
+        };
+        xhr.onerror=()=>{showConnectionProblem();reject(new ConnectionRequestError('连接中断，请核对文件是否已保存后重试。'))};
+        xhr.send(file);
+    });
+}
+async function upload(files){
+    if(uploading)return toast('请等待当前上传完成');
+    const destination=dir;
+    const selected=[...files];
+    uploading=true;
+    $('uploadStatus').hidden=false;
+    const messages=[];
+    let completed=0;
+    try{
+        for(let [i,file] of selected.entries()){
+            $('uploadText').textContent=`${i+1}/${selected.length} 正在上传 ${file.name}`;
+            $('progress').value=0;
+            try{
+                const name=await uploadFile(file,destination);
+                completed++;
+                if(name!==file.name)messages.push('已保存为 '+name);
+            }catch(error){
+                messages.push(file.name+' 上传失败：'+error.message);
+                if(isConnectionError(error))break;
+            }
+        }
+        if(completed)try{await load()}catch(error){messages.push('刷新列表失败：'+error.message)}
+        toast('已上传 '+completed+'/'+selected.length+(messages.length?' · '+messages.join('；'):''));
+    }finally{
+        uploading=false;
+        $('uploadStatus').hidden=true;
+        $('upload').value='';
+    }
+}
 $('uploadButton').onclick=()=>$('upload').click();$('upload').onchange=()=>run(()=>upload($('upload').files));document.addEventListener('dragover',e=>{e.preventDefault();document.body.classList.add('drag')});document.addEventListener('dragleave',()=>document.body.classList.remove('drag'));document.addEventListener('drop',e=>{e.preventDefault();document.body.classList.remove('drag');if(csrf&&e.dataTransfer.files.length)run(()=>upload(e.dataTransfer.files))});
-window.addEventListener('DOMContentLoaded',()=>{(async()=>{try{csrf=(await(await api('/session')).json()).csrf;await load()}catch{if(!$('login').open)$('login').showModal()}})()});
+window.addEventListener('DOMContentLoaded',()=>run(async()=>{
+    try{csrf=(await(await api('/session')).json()).csrf}
+    catch(error){if(error.status===401)return;throw error}
+    await load();
+}));
 
-// This banner remains visible when TLS, hotspot connectivity or response bodies fail.
-function isConnectionError(error){return /failed to fetch|load failed|networkerror|network request failed|连接中断|aborted|network connection/i.test(String(error?.message||error))}
-let connectionBanner,connectionTimer,connectionChecks=0;
+function isConnectionError(error){
+    return error instanceof ConnectionRequestError||/failed to fetch|load failed|networkerror|network request failed|连接中断|network connection/i.test(String(error?.message||error));
+}
+let connectionBanner,connectionTimer,connectionChecks=0,recoveryInFlight=false,needsLibraryReload=true;
 function showConnectionProblem(){
- if(!connectionBanner){connectionBanner=document.createElement('div');connectionBanner.className='connection-problem';connectionBanner.setAttribute('role','status');let text=document.createElement('p');text.textContent='无法完成与电脑的连接。请确认：设备连接电脑热点；管理面板显示共享已启动；使用 https://192.168.137.1:8443 访问。若出现证书提示，请按程序的证书说明核对并信任。';connectionBanner.append(text,button('重新打开安全连接',()=>{location.assign('https://192.168.137.1:8443/')}),button('检测连接',checkConnection));document.body.prepend(connectionBanner)}
- connectionBanner.hidden=false;
- if(!connectionTimer&&connectionChecks<6)connectionTimer=setTimeout(()=>{connectionTimer=null;run(checkConnection)},Math.min(30000,2000*2**connectionChecks));
+    if(!connectionBanner){
+        connectionBanner=document.createElement('div');
+        connectionBanner.className='connection-problem';
+        connectionBanner.setAttribute('role','status');
+        connectionBanner.append(document.createElement('p'),button('立即检测',checkConnection));
+        document.body.prepend(connectionBanner);
+    }
+    connectionBanner.querySelector('p').textContent='暂时连不上电脑。请确认仍连接热点，并查看管理面板的共享状态。恢复后会继续加载列表。';
+    connectionBanner.hidden=false;
+    if(!connectionTimer&&connectionChecks<6)connectionTimer=setTimeout(()=>{connectionTimer=null;run(checkConnection)},Math.min(30000,2000*2**connectionChecks));
 }
 async function checkConnection(){
- if(document.hidden)return;
- connectionChecks++;const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
- try{let response=await fetch('/?connection-check='+Date.now(),{method:'HEAD',cache:'no-store',signal:controller.signal});if(!response.ok)throw Error('HTTP '+response.status);connectionChecks=0;if(connectionTimer){clearTimeout(connectionTimer);connectionTimer=null}if(connectionBanner){connectionBanner.querySelector('p').textContent='已重新连接电脑。请刷新列表后继续；刚才的写入可能已完成，请先核对，避免重复提交。';connectionBanner.querySelector('button').textContent='刷新页面继续';connectionBanner.querySelector('button').onclick=()=>location.reload();}return true}catch{showConnectionProblem();return false}finally{clearTimeout(timer)}
+    if(document.hidden||recoveryInFlight)return;
+    recoveryInFlight=true;
+    connectionChecks++;
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+    try{
+        const response=await fetch('/session',{cache:'no-store',signal:controller.signal});
+        if(!response.ok&&response.status!==401)throw Error('HTTP '+response.status);
+        const hadProblem=connectionBanner&&!connectionBanner.hidden;
+        if(connectionBanner)connectionBanner.hidden=true;
+        connectionChecks=0;
+        if(connectionTimer){clearTimeout(connectionTimer);connectionTimer=null}
+        if(response.status===401){
+            csrf='';
+            if(!$('login').open)$('login').showModal();
+            return true;
+        }
+        csrf=(await response.json()).csrf;
+        if(needsLibraryReload){
+            needsLibraryReload=false;
+            try{await load()}catch(error){if(isConnectionError(error))throw error;toast(error.message)}
+        }
+        if(hadProblem)toast('已重新连接电脑');
+        return true;
+    }catch(error){
+        showConnectionProblem();
+        return false;
+    }finally{clearTimeout(timer);recoveryInFlight=false}
 }
-window.addEventListener('offline',showConnectionProblem);window.addEventListener('online',()=>run(checkConnection));
+window.addEventListener('offline',showConnectionProblem);
+window.addEventListener('online',()=>run(checkConnection));
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&connectionBanner&&!connectionBanner.hidden)run(checkConnection)});
 window.addEventListener('unhandledrejection',event=>{if(isConnectionError(event.reason)){event.preventDefault();showConnectionProblem()}});

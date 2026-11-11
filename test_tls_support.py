@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
-from tls_support import prepare_apple_certificate
+from tls_support import HotspotConnection, prepare_apple_certificate
 
 
 class TlsSupportTests(unittest.TestCase):
@@ -34,6 +34,7 @@ class TlsSupportTests(unittest.TestCase):
                 start_response('200 OK',[('Content-Length',str(len(body)))])
                 return [body]
             server=Server(('127.0.0.1',0),application,numthreads=24,request_queue_size=128,timeout=5)
+            server.ConnectionClass=HotspotConnection
             adapter=BuiltinSSLAdapter(str(state/'server.crt'),str(state/'server.key'))
             server.ssl_adapter=adapter
             server.prepare()
@@ -44,6 +45,10 @@ class TlsSupportTests(unittest.TestCase):
                     socket.create_connection(('127.0.0.1',port),timeout=2).close()
                 context=ssl.create_default_context(cafile=str(public))
                 context.check_hostname=False  # Loopback fixture; production probes verify the IP SAN.
+                for _ in range(12):
+                    with context.wrap_socket(socket.create_connection(('127.0.0.1',port),timeout=2)) as peer:
+                        peer.sendall(b'GET / HTTP/1.1\r\nHost: fixture\r\n')
+                        # Simulate a peer disconnect before it finishes sending headers.
                 def read(_):
                     with urllib.request.urlopen(f'https://127.0.0.1:{port}/',context=context,timeout=10) as response:
                         return len(response.read())

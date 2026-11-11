@@ -1,9 +1,39 @@
 """Verified local health probes and an optional device-trusted local CA."""
 import datetime
+import errno
 import http.client
 import ipaddress
 import ssl
+import sys
 from pathlib import Path
+
+from cheroot.server import HTTPConnection
+
+
+def peer_disconnected(error):
+    closed_socket = getattr(error, 'winerror', None) == 10038 or getattr(error, 'errno', None) == errno.ENOTSOCK
+    return isinstance(error, (ConnectionError, ssl.SSLEOFError)) or closed_socket
+
+
+class HotspotConnection(HTTPConnection):
+    """Let requests from a closed peer end without another socket write."""
+
+    def _conditional_error(self, request, response):
+        if peer_disconnected(sys.exc_info()[1]):
+            return
+        try:
+            super()._conditional_error(request, response)
+        except OSError as error:
+            if not peer_disconnected(error):
+                raise
+
+    def close(self):
+        try:
+            super().close()
+        except OSError as error:
+            if not peer_disconnected(error):
+                raise
+            self.socket.close()
 
 
 def check_service(base):
